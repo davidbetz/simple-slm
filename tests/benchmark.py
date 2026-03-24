@@ -10,16 +10,16 @@ import requests
 API_URL = "http://localhost:5000"
 
 def test_cold_start():
-    """Test cold start by running cpp.py as a subprocess"""
+    """Test cold start by running demo.py as a subprocess"""
     print("\n" + "="*60)
-    print("COLD START TEST (python cpp.py)")
+    print("COLD START TEST (python examples/demo.py)")
     print("="*60)
     print("Loading model from disk on every run...\n")
     
     start = time.time()
     result = subprocess.run(
-        ["python", "cpp.py"],
-        cwd=".",
+        ["python", "examples/demo.py"],
+        cwd="..",
         capture_output=True,
         text=True
     )

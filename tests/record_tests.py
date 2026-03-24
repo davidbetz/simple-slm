@@ -2,14 +2,18 @@
 """
 Test recorder - runs test cases and saves results to CSV for analysis.
 """
+import sys
+import os
+
+# Add parent directory to path so we can import slm package
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import csv
 import json
-import sys
 from datetime import datetime
 from typing import List, Dict, Any
 
-from cpp import (
+from slm.process_intents import (
     parse_command,
     validate_result,
     system_decision,

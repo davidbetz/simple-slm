@@ -1,25 +1,52 @@
-.PHONY: start stop health test test-all test-disable test-enable test-status test-clarify test-batch clean help record-tests
+.PHONY: help demo check start stop health test test-all test-disable test-enable test-status test-clarify test-batch benchmark interactive record-tests record-tests-full clean install
 
 PYTHON = python
 API_URL = http://localhost:5000
 
 help:
-	@echo "Available targets:"
+	@echo "Process Command Parser - Make Targets"
+	@echo "======================================"
+	@echo ""
+	@echo "Quick Start:"
+	@echo "  make demo           - Run console demo with test suite"
+	@echo "  make check          - Verify installation and imports"
+	@echo ""
+	@echo "Server Management:"
 	@echo "  make start          - Start the API server"
 	@echo "  make stop           - Stop the API server"
 	@echo "  make health         - Check server health"
-	@echo "  make test           - Run basic test"
-	@echo "  make test-all       - Run all test cases"
-	@echo "  make test-disable   - Test disable process command"
-	@echo "  make test-enable    - Test enable process command"
-	@echo "  make test-status    - Test status query command"
+	@echo ""
+	@echo "API Testing:"
+	@echo "  make test           - Run basic API test"
+	@echo "  make test-all       - Run all API test cases"
+	@echo "  make test-disable   - Test disable process commands"
+	@echo "  make test-enable    - Test enable process commands"
+	@echo "  make test-status    - Test status query commands"
 	@echo "  make test-clarify   - Test ambiguous commands"
 	@echo "  make test-batch     - Test batch processing"
+	@echo ""
+	@echo "Performance & Recording:"
 	@echo "  make benchmark      - Run performance comparison"
 	@echo "  make interactive    - Start interactive test client"
-	@echo "  make record-tests   - Quick CSV test report (15 tests, ~30 sec)"
-	@echo "  make record-tests-full - Full CSV test report (64 tests, ~2 min)"
+	@echo "  make record-tests   - Quick CSV test report (15 tests)"
+	@echo "  make record-tests-full - Full CSV test report (64 tests)"
+	@echo ""
+	@echo "Maintenance:"
 	@echo "  make clean          - Clean up temporary files"
+	@echo "  make install        - Setup virtual environment (if needed)"
+
+check:
+	@echo "Checking installation..."
+	@$(PYTHON) -c "import sys; print(f'Python: {sys.version}')"
+	@$(PYTHON) -c "from slm import ProcessCommandParser, parse_command; print('✓ slm package imports successfully')"
+	@$(PYTHON) -c "from server import app; print('✓ server imports successfully')"
+	@$(PYTHON) -c "import sys; sys.path.insert(0, 'tests'); from record_tests import TEST_CASES; print(f'✓ tests import successfully ({len(TEST_CASES)} test cases)')"
+	@echo ""
+	@echo "✅ All imports working correctly!"
+
+demo:
+	@echo "Running console demo..."
+	@source env/bin/activate && $(PYTHON) examples/demo.py
 
 start:
 	@echo "Starting API server..."
@@ -107,26 +134,37 @@ test-all: test-disable test-enable test-status test-clarify test-batch
 
 benchmark:
 	@echo "Running performance benchmark..."
-	@source env/bin/activate && $(PYTHON) benchmark.py
+	@source env/bin/activate && $(PYTHON) tests/benchmark.py
 
 interactive:
 	@echo "Starting interactive test client..."
-	@source env/bin/activate && $(PYTHON) test_client.py
+	@source env/bin/activate && $(PYTHON) tests/test_client.py
 
 record-tests:
 	@echo "Recording test results to CSV (quick version)..."
-	@source env/bin/activate && $(PYTHON) quick_csv.py
+	@source env/bin/activate && $(PYTHON) tests/quick_csv.py
 
 record-tests-full:
 	@echo "Recording FULL test results to CSV (64 tests, takes ~2 minutes)..."
-	@source env/bin/activate && $(PYTHON) record_tests_api.py
+	@source env/bin/activate && $(PYTHON) tests/record_tests_api.py
 
-run-cpp:
-	@echo "Running cpp.py directly..."
-	@source env/bin/activate && $(PYTHON) cpp.py
+install:
+	@echo "Setting up Python virtual environment..."
+	@if [ ! -d "env" ]; then \
+		python3 -m venv env; \
+		echo "✓ Virtual environment created"; \
+	else \
+		echo "✓ Virtual environment already exists"; \
+	fi
+	@echo "Installing dependencies..."
+	@source env/bin/activate && pip install -q flask llama-cpp-python pandas requests
+	@echo "✓ Dependencies installed"
+	@echo ""
+	@echo "Run 'make check' to verify installation"
 
 clean:
-	@echo "Cleaning up..."
+	@echo "Cleaning up temporary files..."
 	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	@echo "Done!"
+	@rm -f *.csv 2>/dev/null || true
+	@echo "✓ Cleanup complete!"

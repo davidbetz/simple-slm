@@ -1,25 +1,16 @@
-import os
+"""
+Process management command parser.
+Business logic for parsing operations commands like "disable process 94".
+"""
 import re
-import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
-import pandas as pd
-from llama_cpp import Llama
+from .core import SLMParser
+from .utils import ResultNormalizer
 
-# -------------------------
-# 1) Configure model path
-# -------------------------
-MODEL_NAME = "qwen2-0_5b-instruct-q4_k_m"
-MODEL_PATH = os.path.join(os.getcwd(), "models", f"{MODEL_NAME}.gguf")
-
-llm = Llama(
-    model_path=MODEL_PATH,
-    n_ctx=1024,
-    verbose=False,
-)
 
 # -------------------------
-# 2) Prompt
+# Domain Configuration
 # -------------------------
 SYSTEM_PROMPT = """Extract an operations command as JSON.
 
@@ -56,48 +47,45 @@ REQUIRED_KEYS = {
     "model_confidence",
 }
 
+
 # -------------------------
-# 3) Helpers
+# Process-Specific Helpers
 # -------------------------
-def extract_first_json_object(text: str) -> Optional[str]:
-    start = text.find("{")
-    if start == -1:
-        return None
-
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
-    return None
+def extract_numeric_ids(text: str) -> List[int]:
+    """Extract all numeric IDs from text."""
+    return [int(x) for x in re.findall(r"\b\d+\b", text)]
 
 
-def parse_json_safely(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    raw_json = extract_first_json_object(text)
-    if raw_json is None:
-        return None, "no_json_found"
-    try:
-        return json.loads(raw_json), None
-    except Exception as e:
-        return None, f"json_decode_error: {e}"
+def build_user_prompt(message: str) -> str:
+    """Build few-shot prompt with process command examples."""
+    return f"""Examples:
+
+Input: turn off process 94
+Output: {{"intent":"disable_process","process_id":94,"ambiguities":[],"missing_fields":[],"model_confidence":0.95}}
+
+Input: enable process 12
+Output: {{"intent":"enable_process","process_id":12,"ambiguities":[],"missing_fields":[],"model_confidence":0.95}}
+
+Input: what is process 77 doing
+Output: {{"intent":"get_status","process_id":77,"ambiguities":[],"missing_fields":[],"model_confidence":0.90}}
+
+Input: disable process
+Output: {{"intent":"unknown","process_id":null,"ambiguities":[],"missing_fields":["process_id"],"model_confidence":0.20}}
+
+Input: don't disable process 94
+Output: {{"intent":"unknown","process_id":94,"ambiguities":["negated request"],"missing_fields":[],"model_confidence":0.20}}
+
+Now parse this.
+
+Input: {message}
+Output:"""
 
 
 def normalize_result(data: Dict[str, Any]) -> Dict[str, Any]:
-    ambiguities = data.get("ambiguities", [])
-    missing_fields = data.get("missing_fields", [])
-
-    if not isinstance(ambiguities, list):
-        ambiguities = [str(ambiguities)]
-
-    if not isinstance(missing_fields, list):
-        missing_fields = [str(missing_fields)]
-
-    conf = data.get("model_confidence", 0.0)
-    if not isinstance(conf, (int, float)):
-        conf = 0.0
+    """Normalize model output to expected schema."""
+    ambiguities = ResultNormalizer.ensure_list(data.get("ambiguities", []))
+    missing_fields = ResultNormalizer.ensure_list(data.get("missing_fields", []))
+    conf = ResultNormalizer.ensure_float(data.get("model_confidence", 0.0))
 
     return {
         "intent": data.get("intent", "unknown"),
@@ -108,11 +96,8 @@ def normalize_result(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def extract_numeric_ids(text: str) -> List[int]:
-    return [int(x) for x in re.findall(r"\b\d+\b", text)]
-
-
 def patch_process_id_from_text(message: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract process ID from message text and update result."""
     ids = extract_numeric_ids(message)
 
     # Clear any model-provided process_id if it isn't an int
@@ -138,6 +123,7 @@ def patch_process_id_from_text(message: str, result: Dict[str, Any]) -> Dict[str
 
 
 def apply_rule_overrides(message: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply deterministic rules to override model output when clear."""
     msg = message.lower().strip()
 
     # Simple negation handling
@@ -169,7 +155,24 @@ def apply_rule_overrides(message: str, result: Dict[str, Any]) -> Dict[str, Any]
     return result
 
 
+def sanitize_result(message: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Clean up result to remove impossible flags."""
+    msg = message.lower()
+
+    # Remove impossible negation flags if no negation words exist
+    if "negated request" in result["ambiguities"]:
+        if not re.search(r"\b(don't|do not|dont|not)\b", msg):
+            result["ambiguities"] = [a for a in result["ambiguities"] if a != "negated request"]
+
+    # If no process id exists, intent should usually be unknown
+    if result["process_id"] is None and result["intent"] in {"disable_process", "enable_process", "get_status"}:
+        result["intent"] = "unknown"
+
+    return result
+
+
 def validate_result(data: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Validate result against schema requirements."""
     errors: List[str] = []
 
     extra_keys = set(data.keys()) - REQUIRED_KEYS - {"_raw_model_output"}
@@ -202,6 +205,7 @@ def validate_result(data: Dict[str, Any]) -> Tuple[bool, List[str]]:
 
 
 def system_decision(data: Dict[str, Any], validation_ok: bool) -> str:
+    """Determine if system should confirm or clarify with user."""
     if not validation_ok:
         return "clarify"
     if data["intent"] == "unknown":
@@ -216,94 +220,71 @@ def system_decision(data: Dict[str, Any], validation_ok: bool) -> str:
 
 
 # -------------------------
-# 4) Model call
+# Main Parser
 # -------------------------
-def build_user_prompt(message: str) -> str:
-    return f"""Examples:
+class ProcessCommandParser:
+    """Parser for process management commands."""
+    
+    def __init__(self, model_name: str = "qwen2-0_5b-instruct-q4_k_m"):
+        """Initialize parser with specified model."""
+        self.slm = SLMParser(model_name, n_ctx=1024, verbose=False)
+    
+    def parse_command(self, message: str, max_tokens: int = 48, debug: bool = False) -> Dict[str, Any]:
+        """Parse a process management command into structured JSON.
+        
+        Args:
+            message: Natural language command (e.g., "disable process 94")
+            max_tokens: Maximum tokens for model generation
+            debug: Whether to print debug information
+            
+        Returns:
+            Dictionary with intent, process_id, ambiguities, etc.
+        """
+        last_model_text = ""
 
-Input: turn off process 94
-Output: {{"intent":"disable_process","process_id":94,"ambiguities":[],"missing_fields":[],"model_confidence":0.95}}
+        for _ in range(2):
+            parsed, model_text = self.slm.generate_json(
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=build_user_prompt(message),
+                max_tokens=max_tokens,
+                temperature=0,
+            )
+            
+            last_model_text = model_text
 
-Input: enable process 12
-Output: {{"intent":"enable_process","process_id":12,"ambiguities":[],"missing_fields":[],"model_confidence":0.95}}
+            if parsed is not None:
+                normalized = normalize_result(parsed)
+                before_overrides = normalized.copy()
+                normalized = patch_process_id_from_text(message, normalized)
+                after_patch = normalized.copy()
+                normalized = apply_rule_overrides(message, normalized)
+                sanitize_result(message, normalized)
 
-Input: what is process 77 doing
-Output: {{"intent":"get_status","process_id":77,"ambiguities":[],"missing_fields":[],"model_confidence":0.90}}
+                if debug:
+                    print("MESSAGE:", message)
+                    print("BEFORE_OVERRIDES:", before_overrides)
+                    print("AFTER_PATCH:", after_patch)
+                    print("AFTER_OVERRIDES:", normalized)
+                    
+                normalized["_raw_model_output"] = model_text
+                return normalized
 
-Input: disable process
-Output: {{"intent":"unknown","process_id":null,"ambiguities":[],"missing_fields":["process_id"],"model_confidence":0.20}}
-
-Input: don't disable process 94
-Output: {{"intent":"unknown","process_id":94,"ambiguities":["negated request"],"missing_fields":[],"model_confidence":0.20}}
-
-Now parse this.
-
-Input: {message}
-Output:"""
-
-def sanitize_result(message: str, result: Dict[str, Any]) -> Dict[str, Any]:
-    msg = message.lower()
-
-    # Remove impossible negation flags if no negation words exist
-    if "negated request" in result["ambiguities"]:
-        if not re.search(r"\b(don't|do not|dont|not)\b", msg):
-            result["ambiguities"] = [a for a in result["ambiguities"] if a != "negated request"]
-
-    # If no process id exists, intent should usually be unknown
-    if result["process_id"] is None and result["intent"] in {"disable_process", "enable_process", "get_status"}:
-        result["intent"] = "unknown"
-
-    return result
-
-def parse_command(message: str, max_tokens: int = 48, debug: bool = False) -> Dict[str, Any]:
-    last_model_text = ""
-
-    for _ in range(2):
-        response = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_prompt(message)},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=max_tokens,
-        )
-
-        model_text = response["choices"][0]["message"]["content"]
-        last_model_text = model_text
-        parsed, _parse_error = parse_json_safely(model_text)
-
-        if parsed is not None:
-            normalized = normalize_result(parsed)
-            before_overrides = normalized.copy()
-            normalized = patch_process_id_from_text(message, normalized)
-            after_patch = normalized.copy()
-            normalized = apply_rule_overrides(message, normalized)
-            sanitize_result(message, normalized)
-
-            if debug:
-                print("MESSAGE:", message)
-                print("BEFORE_OVERRIDES:", before_overrides)
-                print("AFTER_PATCH:", after_patch)
-                print("AFTER_OVERRIDES:", normalized)
-            normalized["_raw_model_output"] = model_text
-            return normalized
-
-    fallback = {
-        "intent": "unknown",
-        "process_id": None,
-        "ambiguities": ["parse_failure"],
-        "missing_fields": ["intent"],
-        "model_confidence": 0.0,
-        "_raw_model_output": last_model_text,
-    }
-    fallback = patch_process_id_from_text(message, fallback)
-    fallback = apply_rule_overrides(message, fallback)
-    return fallback
+        # Fallback if parsing failed
+        fallback = {
+            "intent": "unknown",
+            "process_id": None,
+            "ambiguities": ["parse_failure"],
+            "missing_fields": ["intent"],
+            "model_confidence": 0.0,
+            "_raw_model_output": last_model_text,
+        }
+        fallback = patch_process_id_from_text(message, fallback)
+        fallback = apply_rule_overrides(message, fallback)
+        return fallback
 
 
 # -------------------------
-# 5) Test set
+# Test Cases
 # -------------------------
 TEST_CASES = [
     {"input": "turn off process 94", "expected_intent": "disable_process", "expected_pid": 94, "expected_decision": "confirm"},
@@ -317,14 +298,36 @@ TEST_CASES = [
     {"input": "disable process 94 and 95", "expected_intent": "unknown", "expected_pid": None, "expected_decision": "clarify"},
 ]
 
+
 # -------------------------
-# 6) Run evaluation
+# Convenience Functions (for backward compatibility)
+# -------------------------
+_default_parser = None
+
+def get_default_parser() -> ProcessCommandParser:
+    """Get or create the default parser instance."""
+    global _default_parser
+    if _default_parser is None:
+        _default_parser = ProcessCommandParser()
+    return _default_parser
+
+
+def parse_command(message: str, max_tokens: int = 48, debug: bool = False) -> Dict[str, Any]:
+    """Parse a command using the default parser (backward compatibility)."""
+    return get_default_parser().parse_command(message, max_tokens, debug)
+
+
+# -------------------------
+# Main
 # -------------------------
 if __name__ == '__main__':
+    import pandas as pd
+    
+    parser = ProcessCommandParser()
     rows = []
 
     for case in TEST_CASES:
-        result = parse_command(case["input"], debug=True)
+        result = parser.parse_command(case["input"], debug=True)
         validation_ok, validation_errors = validate_result(result)
         decision = system_decision(result, validation_ok)
 
@@ -347,37 +350,17 @@ if __name__ == '__main__':
 
     pd.set_option("display.max_columns", None)
     pd.set_option("display.width", 180)
-
-    print(df.to_string(index=False))
-
-    # -------------------------
-    # 7) One-message demo
-    # -------------------------
-    message = "turn off process 94 plz"
-    result = parse_command(message, debug=True)
-    validation_ok, validation_errors = validate_result(result)
-    decision = system_decision(result, validation_ok)
-
-    print("\nINPUT:")
-    print(message)
-
-    print("\nPARSED RESULT:")
-    print(json.dumps({k: v for k, v in result.items() if k != "_raw_model_output"}, indent=2))
-
-    print("\nVALIDATION:")
-    print(json.dumps({
-        "validation_ok": validation_ok,
-        "validation_errors": validation_errors,
-        "decision": decision,
-    }, indent=2))
-
-    if decision == "confirm":
-        print(f'\nCONFIRMATION MESSAGE:\nI understand that you want to disable process {result["process_id"]}. Is this correct?')
-    else:
-        print("\nCLARIFICATION MESSAGE:")
-        if result["missing_fields"]:
-            print(f"Please clarify the missing fields: {', '.join(result['missing_fields'])}")
-        elif result["ambiguities"]:
-            print(f"Please clarify: {', '.join(result['ambiguities'])}")
-        else:
-            print("I could not safely determine your intent. Please restate your request with a numeric process ID.")
+    
+    print("\n" + "="*80)
+    print("PROCESS COMMAND PARSER TEST RESULTS")
+    print("="*80)
+    print(df)
+    print("\n" + "="*80)
+    print("SUMMARY")
+    print("="*80)
+    intent_match = (df["expected_intent"] == df["actual_intent"]).sum()
+    pid_match = (df["expected_pid"] == df["actual_pid"]).sum()
+    decision_match = (df["expected_decision"] == df["actual_decision"]).sum()
+    print(f"Intent matches: {intent_match}/{len(df)}")
+    print(f"Process ID matches: {pid_match}/{len(df)}")
+    print(f"Decision matches: {decision_match}/{len(df)}")

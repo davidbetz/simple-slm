@@ -1,7 +1,6 @@
 import json
 from flask import Flask, request, jsonify
-from cpp import (
-    llm,
+from slm.process_intents import (
     parse_command,
     validate_result,
     system_decision,

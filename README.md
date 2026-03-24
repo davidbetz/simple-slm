@@ -33,7 +33,7 @@ This is **pattern recognition**, not knowledge retrieval. Small models excel at 
 
 ### The Secret: Hybrid Intelligence (Model + Rules)
 
-`cpp.py` doesn't trust the AI model blindly. It uses a **three-layer approach**:
+The system uses a **three-layer approach** (implemented in `process_parser.py`):
 
 #### Layer 1: Prompt Engineering (Teach by Example)
 The prompt includes example inputs/outputs, just like showing someone how to fill out a form:
@@ -53,7 +53,7 @@ A quantized 500MB model (Qwen2-0.5B) generates JSON output. It's run via **llama
 **Why quantized?** The model uses 4-bit precision instead of 16-bit. Imagine storing colors with 16 shades instead of 65,000 - still good enough for most tasks, but 4x more efficient.
 
 #### Layer 3: Rule-Based Safety Net (Deterministic Cleanup)
-After the model responds, `cpp.py` applies sanity checks:
+After the model responds, the parser applies sanity checks:
 
 - **`patch_process_id_from_text()`**: Uses regex to extract numeric IDs  
   *Example: If model missed "94" in the text, regex finds it*
@@ -78,35 +78,85 @@ This hybrid approach combines **AI flexibility** (handles natural phrasing) with
 
 For structured extraction tasks like this, **a tiny specialized model with safety rails beats a general-purpose giant**.
 
+## Project Structure
+
+```
+slm/                    # Core library
+├── utils.py           # Generic utilities (JSON, normalization)
+├── core.py            # SLM infrastructure (model, generation)
+└── process_intents.py # Process command intent detector
+
+examples/              # Usage examples
+└── demo.py           # Console demo
+
+tests/                 # Test suite
+server.py             # Flask API
+models/               # GGUF models
+```
+
+**Three-layer architecture:**
+
+- **`slm/utils.py`** - Generic Python utilities (reusable anywhere)
+- **`slm/core.py`** - SLM infrastructure (reusable for any parsing task)  
+- **`slm/process_intents.py`** - Process management intent detector (domain-specific business logic)
+
+This separation makes it easy to adapt the framework for other domains (SQL commands, code intents, etc.) by only changing the business logic layer.
+
 ## Deployment Pattern: The Cold Start Problem
 
-The original `cpp.py` had a **cold start problem** - it loaded the model from disk on every run. This API server loads the model **once** at startup and keeps it in memory, simulating real-world deployment.
+The original implementation had a **cold start problem** - it loaded the model from disk on every run. This API server loads the model **once** at startup and keeps it in memory, simulating real-world deployment.
 
 ## Quick Start
 
-### Using Make (Recommended)
+All operations can be run via `make` commands. Run `make help` to see all options.
+
+### First Time Setup
 
 ```bash
-# See all available commands
-make help
+make check         # Verify installation
+make demo          # Run console demo
+```
 
-# Start the server (in a separate terminal)
-make start
+### Using Make (Recommended)
 
-# Run tests
-make test              # Basic test
-make test-all          # All test cases
-make test-disable      # Test disable commands
-make test-enable       # Test enable commands
-make test-status       # Test status queries
-make test-clarify      # Test ambiguous commands
-make test-batch        # Test batch processing
+**Development workflow:**
+```bash
+make demo          # Quick console test
+make start         # Start API server (in separate terminal)
+make test-all      # Test all endpoints
+make clean         # Clean up temp files
+```
 
-# Other commands
-make health            # Check server health
-make benchmark         # Performance comparison
-make interactive       # Interactive test mode
-make stop              # Stop the server
+**All commands:**
+```bash
+# Quick Start
+make help          # Show all available commands
+make demo          # Run console demo with test suite
+make check         # Verify installation and imports
+
+# Server
+make start         # Start the API server
+make stop          # Stop the API server
+make health        # Check server health
+
+# Testing
+make test          # Basic API test
+make test-all      # All test cases
+make test-disable  # Test disable commands
+make test-enable   # Test enable commands
+make test-status   # Test status queries
+make test-clarify  # Test ambiguous commands
+make test-batch    # Test batch processing
+
+# Performance & Recording
+make benchmark     # Performance comparison
+make interactive   # Interactive test mode
+make record-tests  # Quick CSV report (15 tests)
+make record-tests-full  # Full CSV report (64 tests)
+
+# Maintenance
+make clean         # Clean up temporary files
+make install       # Setup virtual environment
 ```
 
 ### Manual Commands
@@ -302,12 +352,30 @@ It learned from seeing millions of examples like:
 
 ## Development
 
-To run the original evaluation script:
+### Quick Console Demo
+
+Test the parser directly from the command line:
+
 ```bash
-python cpp.py
+# Run test suite + example
+python examples/demo.py
+
+# Parse a specific command
+python examples/demo.py "disable process 42"
+python examples/demo.py "what is process 99 doing"
 ```
 
-This still works but loads the model fresh each time (cold start).
+The demo script provides formatted output showing the parsed result, validation status, and system decision.
+
+You can also use the `make demo` shortcut.
+
+### Running Tests
+
+For comprehensive testing with CSV output:
+```bash
+make record-tests        # Quick test (15 cases)
+make record-tests-full   # Full suite (64 cases)
+```
 
 ## FAQ (For ChatGPT Users)
 
